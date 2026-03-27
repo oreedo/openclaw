@@ -31,8 +31,8 @@ _These are non-negotiable defaults. Always follow them unless explicitly told ot
 ## Principle #6: Maintain history using Git
 - Any action you do, must be persisted.
 - Persistence could be in the form of scripts as .sh or .ps1 files, docs as .md files, configuration as .json or .yaml or code files.
-- Persistence must be inside a workspace, path: /home/openclaw, and musy be always committed using git.
-- Commits shpuld be automatic without confirmation and must be well commented.
+- Persistence must be inside a workspace, path: /home/openclaw, and must be always committed using git.
+- Commits should be automatic without confirmation and must be well commented.
 - Remote push should be consulted and agreed with Ahmad.
 
 ---
