@@ -24,6 +24,8 @@ For repeated operations, prefer:
 
 Avoid migration steps that depend on ad-hoc manual shell snippets when a stable script can do the same job.
 
+Scripts should live under the top-level `scripts/` folder beside `docs/`, not inside `docs/`.
+
 ---
 
 ## Step 1: Assess Current Cluster
@@ -91,13 +93,13 @@ Do **not** assume the active app is a deployment called `rentek`. The current na
 
 Use the verification script instead of manually re-running audit commands:
 
-- `docs/cluster/rentek-verify-live.sh`
+- `scripts/cluster/rentek-verify-live.sh`
 
 Example:
 
 ```bash
 source ~/.bashrc
-bash docs/cluster/rentek-verify-live.sh --kubectl kubectl
+bash scripts/cluster/rentek-verify-live.sh --kubectl kubectl
 ```
 
 ---
@@ -172,7 +174,7 @@ Rentek migration should be done in two layers.
 
 #### Layer A: Portable configuration
 Use the idempotent script:
-- `docs/cluster/rentek-config-migrate.sh`
+- `scripts/cluster/rentek-config-migrate.sh`
 
 This script handles:
 - namespace
@@ -185,7 +187,7 @@ This script handles:
 
 ```bash
 source ~/.bashrc
-bash docs/cluster/rentek-config-migrate.sh bundle-source \
+bash scripts/cluster/rentek-config-migrate.sh bundle-source \
   --kubectl kubectl \
   --namespace rentek \
   --bundle-dir ./rentek-config-bundle \
@@ -196,7 +198,7 @@ bash docs/cluster/rentek-config-migrate.sh bundle-source \
 
 ```bash
 source ~/.bashrc
-bash docs/cluster/rentek-config-migrate.sh apply-target \
+bash scripts/cluster/rentek-config-migrate.sh apply-target \
   --kubectl kubectl \
   --namespace rentek \
   --bundle-dir ./rentek-config-bundle
@@ -206,7 +208,7 @@ bash docs/cluster/rentek-config-migrate.sh apply-target \
 
 ```bash
 source ~/.bashrc
-bash docs/cluster/rentek-config-migrate.sh verify-target \
+bash scripts/cluster/rentek-config-migrate.sh verify-target \
   --kubectl kubectl \
   --namespace rentek
 ```
@@ -257,7 +259,7 @@ Use the read-only verification script:
 
 ```bash
 source ~/.bashrc
-bash docs/cluster/rentek-verify-live.sh --kubectl kubectl --namespace rentek
+bash scripts/cluster/rentek-verify-live.sh --kubectl kubectl --namespace rentek
 ```
 
 Confirm:
@@ -321,8 +323,8 @@ Only decommission the source cluster after:
 `rentek-app` (`0.6.6`) is running in the namespace but is **not** the active public app path. Treat it as a special-case leftover/secondary deployment unless its purpose is explicitly documented before migration.
 
 ### Script inventory
-- `docs/cluster/rentek-config-migrate.sh` — idempotent bundle/apply/verify for portable Rentek config
-- `docs/cluster/rentek-verify-live.sh` — read-only live verification of active Rentek routing and deployment state
+- `scripts/cluster/rentek-config-migrate.sh` — idempotent bundle/apply/verify for portable Rentek config
+- `scripts/cluster/rentek-verify-live.sh` — read-only live verification of active Rentek routing and deployment state
 
 ---
 
