@@ -11,14 +11,25 @@ This document outlines a deterministic migration plan for the Kubernetes cluster
 - **MSSQL**
 - **Rentek**
 
-This document has been updated to reflect the actual observed state of the current cluster, especially the Rentek namespace.
+This document is intentionally script-driven. The goal is to avoid copy/paste-heavy migration work and replace it with reusable, idempotent scripts.
+
+---
+
+## Guiding Principle
+For repeated operations, prefer:
+- reusable scripts
+- parameterized execution
+- idempotent `apply` behavior
+- verification scripts
+
+Avoid migration steps that depend on ad-hoc manual shell snippets when a stable script can do the same job.
 
 ---
 
 ## Step 1: Assess Current Cluster
 
 ### 1.1 Backup Cluster Configuration
-Export the current cluster resources for reference and disaster recovery:
+Create cluster reference exports for disaster recovery and comparison:
 
 ```bash
 kubectl get all -A -o yaml > all-resources.yaml
@@ -26,8 +37,10 @@ kubectl get ingress,svc,deploy,cm,secret,pvc -A -o yaml > core-resources.yaml
 helm list -A > helm-list-summary.txt
 ```
 
+These are reference exports, not the preferred migration mechanism.
+
 ### 1.2 Capture Object-Level State for Critical Namespaces
-For critical namespaces, export targeted manifests rather than relying only on `get all`:
+Export targeted manifests for critical namespaces:
 
 ```bash
 kubectl -n default get deploy,svc,ingress,cm,secret,pvc -o yaml > default-core.yaml
@@ -76,19 +89,16 @@ Do **not** assume the active app is a deployment called `rentek`. The current na
 - active pull secret → `registry-1`
 - active ConfigMap → `assetlinks-config`
 
-Export the Rentek namespace with the correct objects:
+Use the verification script instead of manually re-running audit commands:
+
+- `docs/cluster/rentek-verify-live.sh`
+
+Example:
 
 ```bash
-kubectl -n rentek get deploy rentek-app rentek-app2 gx-redis-app -o yaml > rentek-deployments.yaml
-kubectl -n rentek get svc rentek-svc gx-redis-svc -o yaml > rentek-services.yaml
-kubectl -n rentek get ingress rentek-ingress -o yaml > rentek-ingress.yaml
-kubectl -n rentek get cm assetlinks-config -o yaml > rentek-configmaps.yaml
-kubectl -n rentek get secret registry-1 docker-auth-config -o yaml > rentek-pull-secrets.yaml
-kubectl -n rentek get pvc rentek-pictures-pvc -o yaml > rentek-pvc.yaml
-kubectl -n rentek get endpoints,endpointslice -o yaml > rentek-endpoints.yaml
+source ~/.bashrc
+bash docs/cluster/rentek-verify-live.sh --kubectl kubectl
 ```
-
-Important: `rentek-app2` is the main deployment lineage and the actual public app. `rentek-app` is a secondary/leftover deployment and must not be treated as the active service target during migration planning.
 
 ---
 
@@ -158,36 +168,47 @@ RESTORE DATABASE [YourDB] FROM DISK = N'/var/opt/mssql/backups/YourDB.bak'
 - storage sizing and IOPS expectations
 
 ### 3.3 Rentek
-Rentek migration should be done in two layers:
+Rentek migration should be done in two layers.
 
 #### Layer A: Portable configuration
-Migrate the namespace configuration first:
+Use the idempotent script:
+- `docs/cluster/rentek-config-migrate.sh`
+
+This script handles:
 - namespace
 - `assetlinks-config` ConfigMap
 - pull secret `registry-1`
 - optional `docker-auth-config`
-- TLS secret if reusing the same cert strategy
+- optional ingress TLS secret
 
-Recommended helper script:
-- `docs/cluster/rentek-export-import-config.sh`
-
-Example:
+##### Source-side bundle creation
 
 ```bash
-bash docs/cluster/rentek-export-import-config.sh export \
-  --kubectl "kubectl" \
+source ~/.bashrc
+bash docs/cluster/rentek-config-migrate.sh bundle-source \
+  --kubectl kubectl \
   --namespace rentek \
-  --out ./rentek-config-bundle \
+  --bundle-dir ./rentek-config-bundle \
   --include-tls
 ```
 
-Then on destination:
+##### Target-side apply
 
 ```bash
-bash docs/cluster/rentek-export-import-config.sh import \
-  --kubectl "kubectl" \
+source ~/.bashrc
+bash docs/cluster/rentek-config-migrate.sh apply-target \
+  --kubectl kubectl \
   --namespace rentek \
-  --from ./rentek-config-bundle
+  --bundle-dir ./rentek-config-bundle
+```
+
+##### Target-side verification
+
+```bash
+source ~/.bashrc
+bash docs/cluster/rentek-config-migrate.sh verify-target \
+  --kubectl kubectl \
+  --namespace rentek
 ```
 
 #### Layer B: Workload deployment
@@ -213,8 +234,6 @@ Before production cutover, confirm one of the following:
 2. `rentek-app2` stores files differently, or
 3. `rentek-app2` is missing a required volume mount and must be fixed before migration
 
-This is the most important Rentek-specific validation point remaining.
-
 #### What not to do
 Do not migrate Rentek by blindly applying an assumed `deployment/rentek` manifest. That object does not represent the actual active public app in the current cluster.
 
@@ -234,13 +253,11 @@ Do not migrate Rentek by blindly applying an assumed `deployment/rentek` manifes
 - validate app login connectivity
 
 #### Rentek
-Validate the actual active route and objects:
+Use the read-only verification script:
 
 ```bash
-kubectl -n rentek get ingress rentek-ingress -o wide
-kubectl -n rentek get svc rentek-svc -o wide
-kubectl -n rentek get endpoints,endpointslice
-kubectl -n rentek get deploy rentek-app2 -o wide
+source ~/.bashrc
+bash docs/cluster/rentek-verify-live.sh --kubectl kubectl --namespace rentek
 ```
 
 Confirm:
@@ -302,6 +319,10 @@ Only decommission the source cluster after:
 
 ### Operational note
 `rentek-app` (`0.6.6`) is running in the namespace but is **not** the active public app path. Treat it as a special-case leftover/secondary deployment unless its purpose is explicitly documented before migration.
+
+### Script inventory
+- `docs/cluster/rentek-config-migrate.sh` — idempotent bundle/apply/verify for portable Rentek config
+- `docs/cluster/rentek-verify-live.sh` — read-only live verification of active Rentek routing and deployment state
 
 ---
 
