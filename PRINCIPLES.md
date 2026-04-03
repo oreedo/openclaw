@@ -134,7 +134,7 @@ Use subjective approaches only when objective methods are impractical or unavail
 
 - **Working Directory**: `D:\Projects\openclaw`
 - **Git Remote**: `origin git@github-oreedo:oreedo/openclaw.git`
-- **Branch**: `docs/dbmart_windows_vps` (when working in docs directory)
+- **Branch**: `docs/dbmart_windows_vps`
 
 ---
 
