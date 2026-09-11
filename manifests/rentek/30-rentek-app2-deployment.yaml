@@ -1,0 +1,85 @@
+# ACTIVE app. The init container + assetlinks volumes exist ONLY here: Portainer stack 13 and linux-scripts both lack them.
+# Generated from the live cluster by scripts/cluster/rentek-export-manifests.sh — do not hand-edit.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kubernetes.io/change-cause: oreedo/rentek:0.6.8
+  labels:
+    app: rentek-app2
+    du: Rentek
+    genby: genexus
+    io.portainer.kubernetes.application.kind: content
+    io.portainer.kubernetes.application.name: ''
+    io.portainer.kubernetes.application.owner: zalzoubi
+    io.portainer.kubernetes.application.owner.id: ''
+    io.portainer.kubernetes.application.stack: ''
+    io.portainer.kubernetes.application.stackid: '13'
+  name: rentek-app2
+  namespace: rentek
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: rentek-app2
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: rentek-app2
+        du: Rentek
+        genby: genexus
+    spec:
+      containers:
+      - image: oreedo/rentek:0.6.8
+        imagePullPolicy: Always
+        name: rentek
+        ports:
+        - containerPort: 5000
+          name: external-port
+          protocol: TCP
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /app/.well-known/assetlinks.json
+          name: assetlinks-volume
+          readOnly: true
+          subPath: assetlinks.json
+        - mountPath: /app/.well-known
+          name: shared-volume
+          readOnly: true
+          subPath: .well-known
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+      - name: registry-1
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - mkdir -p /shared/.well-known && cp /tmp/configmap/assetlinks.json /shared/.well-known/assetlinks.json
+        image: busybox:latest
+        imagePullPolicy: Always
+        name: setup-assetlinks
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /tmp/configmap
+          name: assetlinks-volume
+        - mountPath: /shared
+          name: shared-volume
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: assetlinks-config
+        name: assetlinks-volume
+      - emptyDir: {}
+        name: shared-volume

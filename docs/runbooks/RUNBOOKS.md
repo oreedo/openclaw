@@ -16,6 +16,7 @@
 | RB-6 | DNS cutover | **yes** |
 | RB-7 | Migrate the stack to a new cluster | **yes** |
 | RB-8 | Redis restart and session loss | **yes** |
+| RB-9 | Changing the app through Portainer without losing configuration | **yes** |
 
 ---
 
@@ -250,3 +251,33 @@ Do **not** carry over: TLS secrets (re-issue), Redis data, the Lucene index, `re
 ```
 
 The app reconnects on its own; no restart of `rentek-app2` is required. Prefer a low-traffic window. If sessions must survive restarts, add a PVC and enable AOF — a change to make on the target, not here.
+
+---
+
+## RB-9 — Changing the app through Portainer without losing configuration
+
+Deployments here are made in place through the Portainer UI (analysis §10b). Portainer keeps its own copy of each stack's YAML, and for `rentek-app2` **that copy is wrong**: it lacks the init container and the `.well-known` volumes that serve `/.well-known/assetlinks.json`.
+
+**Before touching stack 13 in Portainer**, know that *Update the stack* re-applies the stored file and removes that configuration. Symptoms afterwards: the app still serves pages, but `https://app.rentek.oreedo.co/.well-known/assetlinks.json` returns 404 and Android App Links stop verifying.
+
+Safe ways to change the running app:
+
+```bash
+# Preferred: change the cluster, then re-export so Git reflects reality
+/snap/bin/microk8s kubectl -n rentek set image deploy/rentek-app2 rentek=oreedo/rentek:<NEW_TAG>   # RB-5
+bash scripts/cluster/rentek-export-manifests.sh
+git -C /home/openclaw diff manifests/rentek/        # review, then commit
+
+# Or apply the known-good manifest set directly
+/snap/bin/microk8s kubectl apply -f manifests/rentek/
+```
+
+After **any** Portainer change, verify nothing was lost and re-export:
+
+```bash
+curl -s -o /dev/null -w 'assetlinks: HTTP %{http_code}\n' https://app.rentek.oreedo.co/.well-known/assetlinks.json   # expect 200
+/snap/bin/microk8s kubectl -n rentek get deploy rentek-app2 -o jsonpath='{.spec.template.spec.initContainers[*].name}{"\n"}'  # expect setup-assetlinks
+/snap/bin/microk8s kubectl diff -f manifests/rentek/ || bash scripts/cluster/rentek-export-manifests.sh
+```
+
+To make the UI safe again, paste the contents of `manifests/rentek/30-rentek-app2-deployment.yaml` and `31-rentek-service.yaml` into stack 13's editor so Portainer's stored copy matches production (open question O1a).

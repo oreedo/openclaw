@@ -1,0 +1,22 @@
+# In-namespace session endpoint used by the app as gx-redis-svc:6379.
+# Generated from the live cluster by scripts/cluster/rentek-export-manifests.sh — do not hand-edit.
+apiVersion: v1
+kind: Service
+metadata:
+  annotations: {}
+  labels:
+    app: gx-redis-svc
+    genby: genexus
+  name: gx-redis-svc
+  namespace: rentek
+spec:
+  ports:
+  - name: tcp
+    port: 6379
+    protocol: TCP
+    targetPort: 6379
+  selector:
+    app: gx-redis-app
+    tier: redis
+  sessionAffinity: None
+  type: ClusterIP

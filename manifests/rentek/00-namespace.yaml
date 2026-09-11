@@ -1,0 +1,18 @@
+# Namespace (Portainer stack 1).
+# Generated from the live cluster by scripts/cluster/rentek-export-manifests.sh — do not hand-edit.
+apiVersion: v1
+kind: Namespace
+metadata:
+  annotations: {}
+  labels:
+    genby: genexus
+    io.portainer.kubernetes.application.kind: content
+    io.portainer.kubernetes.application.name: ''
+    io.portainer.kubernetes.application.owner: aabuabdou
+    io.portainer.kubernetes.application.stack: ''
+    io.portainer.kubernetes.application.stackid: '1'
+    kubernetes.io/metadata.name: rentek
+  name: rentek
+spec:
+  finalizers:
+  - kubernetes

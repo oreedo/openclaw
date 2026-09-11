@@ -265,6 +265,33 @@ The DNSimple API token is read from a `.env` file next to the script (`DNSIMPLE_
 
 **Consequence for migration:** re-deploying Rentek from Git alone would bring up the *wrong* (0.6.6, no ingress, no assetlinks) application. The authoritative definition of the running app is the cluster itself — which is why this analysis ships exported manifests (§13) rather than pointing at the repo.
 
+## 10b. How things actually get deployed: Portainer
+
+Deployments are performed **by hand, in place, through the Portainer web UI** — not from Git and not with `kubectl`. Portainer stores each "stack" as a YAML file on its own PersistentVolume (`/var/snap/microk8s/common/default-storage/portainer-portainer-pvc-…/compose/<stackid>/k8s-deployment.yml`) and stamps the objects it creates with `io.portainer.kubernetes.application.*` labels.
+
+| Stack | Objects | Notes |
+|---|---|---|
+| 1 | Namespace `rentek` | owner `aabuabdou` |
+| 2 | `gx-redis-svc` + `gx-redis-app` | current |
+| 3, 7, 8, 9 | `rentek-svc` + `rentek-app` | successive redeploys of the legacy app |
+| 10, 11 | `rentek-svc` + `rentek-20251007` | deployment no longer exists |
+| 12 | `rentek-svc` + `rentek-app1` | deployment no longer exists |
+| **13** | `rentek-svc` + **`rentek-app2`** | the live app, owner `zalzoubi` |
+| 14 | ConfigMap `assetlinks-config` | added separately, 2025-09-10 |
+
+**The same object exists in three different versions**, and only the cluster is correct:
+
+| Source | `rentek-app2` content |
+|---|---|
+| `linux-scripts` (Git) | does not contain `rentek-app2` at all — only `rentek-app` 0.6.6 |
+| Portainer stack 13 file | image 0.6.8, **no init container, no volumes**, Service without `targetPort` |
+| `last-applied-configuration` on the live object | image **0.6.6**, no init container |
+| **Live cluster (truth)** | image 0.6.8 **plus** init container `setup-assetlinks` and the two `.well-known` volumes |
+
+**Operational trap:** pressing *Update the stack* on stack 13 re-applies the stored file and silently removes the init container and the assetlinks volumes, which breaks `/.well-known/assetlinks.json` and therefore Android App Links. The same applies to any Portainer-driven redeploy of this stack.
+
+**Remediation shipped with this analysis:** `scripts/cluster/rentek-export-manifests.sh` regenerates an apply-ready manifest set from the live cluster into `manifests/rentek/`. It was verified with `kubectl diff -f manifests/rentek/`, which reports **no differences** — the files reproduce production exactly, including the init container. Use them (not Git, not the Portainer stack files) as the migration input, and re-export after every Portainer change so the diff is reviewable.
+
 ## 11. Findings and risks
 
 | # | Severity | Finding |
@@ -286,7 +313,7 @@ The DNSimple API token is read from a `.env` file next to the script (`DNSIMPLE_
 | F15 | Low | TLS delivery depends on one CronJob; if it fails silently the replica ages out up to 7 days after renewal before anything breaks |
 | F16 | Low | No NetworkPolicies anywhere in `rentek`; any pod in the cluster can reach Redis and the app |
 | F18 | **High (security)** | `linux-scripts` contains **54 committed private keys/PFX/PEM files**, including `STAR_oreedo_co.key` and `tls-rentek-secret.yaml` with `tls.key`, plus the MSSQL SA password in `mssql-chart/values.yaml`. Verify the GitHub repo's visibility and rotate anything that was ever public |
-| F19 | **High (operations)** | **Manifest drift**: the running `rentek-app2`, its init container, `assetlinks-config` ConfigMap and `rentek-ingress` are not in Git; the MSSQL chart values do not match the deployed release. There is no reproducible "deploy from source" path today |
+| F19 | **High (operations)** | **Manifest drift, by design**: deployments are made by hand in Portainer (§10b), so Git, the Portainer stack file and the live object disagree about `rentek-app2`. Re-applying Portainer stack 13 would delete the init container and break Android App Links. Mitigated by `manifests/rentek/` + `rentek-export-manifests.sh`, which are verified to match production; the MSSQL chart values also do not match the deployed release |
 | F17 | Low | cert-manager v1.8.0 (2022) and ingress-nginx v1.8.0 are far behind; host has 48 weeks of uptime without a reboot |
 
 ## 12. Migration implications and open questions
@@ -300,6 +327,7 @@ The DNSimple API token is read from a `.env` file next to the script (`DNSIMPLE_
 Open questions to answer with the application owner:
 
 - **O1** Is the encrypted `Connection-*-Datasource` an IP literal or a hostname? Only the GeneXus project shows this, and it decides the migration path.
+- **O1a** Should Portainer stack 13 be corrected (or deleted) so nobody re-applies a file that removes the assetlinks setup? Fixing the stack file to match `manifests/rentek/30-rentek-app2-deployment.yaml` would make the UI safe again.
 - **O2** Can `rentek-app` (0.6.6) and `rentek-pictures-pvc` be deleted? Both appear unused and the PVC is empty — note that `rentek/K8s-Rentek-App.yaml` in `linux-scripts` still defines *only* that deployment, so the repo must be updated at the same time.
 - **O3** Which Azure Storage account/containers are in use, and who holds the keys?
 - **O4** Where is SMTP configured (GAM tables or app), and which relay does it use?
@@ -315,3 +343,5 @@ bash scripts/cluster/rentek-source-inventory.sh --out-dir /root/backups/rentek-i
 ```
 
 The bundle is the input for the migration runbooks in `docs/runbooks/RUNBOOKS.md`.
+
+Apply-ready manifests of the running stack live in **`manifests/rentek/`**, regenerated by `scripts/cluster/rentek-export-manifests.sh` and verified against the cluster with `kubectl diff -f manifests/rentek/` (no differences).

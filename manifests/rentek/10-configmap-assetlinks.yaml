@@ -1,0 +1,14 @@
+# Android App Links file, served at /.well-known/assetlinks.json (Portainer stack 14).
+# Generated from the live cluster by scripts/cluster/rentek-export-manifests.sh — do not hand-edit.
+apiVersion: v1
+data:
+  assetlinks.json: "[ { \n    \"relation\" : [ \"delegate_permission/common.handle_all_urls\" ],\n   \
+    \ \"target\" : { \n        \"namespace\" : \"android_app\",\n        \"package_name\" : \"com.genexus.renteknew.rentek\"\
+    ,\n        \"sha256_cert_fingerprints\" : [ \"1C:FB:52:EC:4B:E8:59:F6:9D:F3:F3:6A:91:B9:F9:21:EE:3E:82:34:6C:DF:FC:DC:EE:7D:BA:19:A6:EF:C9:B3\"\
+    \ ]\n    }\n} ]"
+kind: ConfigMap
+metadata:
+  labels:
+    io.portainer.kubernetes.configuration.owner: ''
+  name: assetlinks-config
+  namespace: rentek

@@ -1,0 +1,30 @@
+# NodePort service selecting app=rentek-app2.
+# Generated from the live cluster by scripts/cluster/rentek-export-manifests.sh — do not hand-edit.
+apiVersion: v1
+kind: Service
+metadata:
+  annotations: {}
+  labels:
+    app: rentek-svc
+    du: Rentek
+    genby: genexus
+    io.portainer.kubernetes.application.kind: content
+    io.portainer.kubernetes.application.name: ''
+    io.portainer.kubernetes.application.owner: zalzoubi
+    io.portainer.kubernetes.application.owner.id: ''
+    io.portainer.kubernetes.application.stack: ''
+    io.portainer.kubernetes.application.stackid: '13'
+  name: rentek-svc
+  namespace: rentek
+spec:
+  externalTrafficPolicy: Cluster
+  ports:
+  - name: http
+    nodePort: 32598
+    port: 5000
+    protocol: TCP
+    targetPort: 5000
+  selector:
+    app: rentek-app2
+  sessionAffinity: None
+  type: NodePort

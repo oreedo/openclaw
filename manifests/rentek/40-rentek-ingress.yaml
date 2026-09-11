@@ -1,0 +1,30 @@
+# Public entry point; TLS secret tls-oreedo-co is replicated in by the platform-tls CronJob.
+# Generated from the live cluster by scripts/cluster/rentek-export-manifests.sh — do not hand-edit.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/app-root: /mobilewebapp.mwapphome
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/use-regex: 'true'
+  labels:
+    io.portainer.kubernetes.ingress.owner: ''
+  name: rentek-ingress
+  namespace: rentek
+spec:
+  ingressClassName: public
+  rules:
+  - host: app.rentek.oreedo.co
+    http:
+      paths:
+      - backend:
+          service:
+            name: rentek-svc
+            port:
+              number: 5000
+        path: /(.*)
+        pathType: Exact
+  tls:
+  - hosts:
+    - app.rentek.oreedo.co
+    secretName: tls-oreedo-co
