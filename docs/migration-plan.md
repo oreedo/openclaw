@@ -67,12 +67,12 @@ path "sys/storage/raft/snapshot" {
 
 ```bash
 bash scripts/vault/install-vault-cli.sh          # verified Vault CLI 1.18.5 (idempotent)
-# human, in their own terminal (password never passes through the assistant):
-VAULT_ADDR=https://vault.oreedo.co vault login -method=userpass username=claude-code
+# human, in their own SSH terminal (needs a real TTY; the password never passes through the assistant):
+unset VAULT_TOKEN; VAULT_ADDR=https://vault.oreedo.co vault login -no-print -method=userpass username=claude-code
 bash scripts/vault/vault-backup.sh --revoke-token  # -> /root/backups/vault/<cluster>-<UTC>.snap (+ .sha256, .inspect.txt)
 ```
 
-The script checks the token's capability first, validates the snapshot with `vault operator raft snapshot inspect`, and writes root-only files outside the repo. First backup: 2026-09-11, Raft index 4054 (current at capture). Copy snapshots off this host.
+The password prompt runs in raw mode: Backspace is taken literally, so on a typo press Ctrl-C and retype. `-no-print` keeps the token out of the terminal (it lands in `/root/.vault-token`, 0600). The script checks the token's capability first, validates the snapshot with `vault operator raft snapshot inspect`, and writes root-only files outside the repo. First backup: 2026-09-11, Raft index 4054 (current at capture). Copy snapshots off this host.
 
 Also secure separately:
 - unseal keys
@@ -161,7 +161,7 @@ Also ensure:
 vault operator raft snapshot restore -force <cluster>-<UTC>.snap
 ```
 
-`-force` is required because the new cluster was initialized with different unseal keys (without it Vault rejects the snapshot: "could not verify hash file"). The snapshot carries the source keyring, so afterwards unseal with the **source** cluster's Shamir keys (3 of 5).
+`-force` is required because the new cluster was initialized with different unseal keys (without it Vault rejects the snapshot: "could not verify hash file"). The snapshot carries the source keyring, so afterwards unseal with the **source** cluster's Shamir keys (3 of 5). The restore also replaces the token store: the new cluster's init root token stops working, so authenticate with credentials from the source. Everything written to the source after the snapshot is lost. Restores above 1 MiB fail through ingress-nginx's default body limit (413) — restore via `kubectl port-forward` to the Vault pod instead of the ingress.
 
 3. Verify:
 - unseal flow

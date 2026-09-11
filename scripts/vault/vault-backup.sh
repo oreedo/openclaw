@@ -104,6 +104,8 @@ main() {
 
   if [[ "$REVOKE" == "true" ]]; then
     vault token revoke -self >/dev/null && log "Token revoked"
+    # revoke -self doesn't erase the CLI token helper file; drop it when it was the source
+    [[ -z "${VAULT_TOKEN:-}" ]] && rm -f "${HOME}/.vault-token"
   fi
 }
 

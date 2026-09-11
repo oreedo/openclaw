@@ -70,10 +70,11 @@ main() {
   export GNUPGHOME="$tmp/gnupg"
   mkdir -m 700 "$GNUPGHOME"
   gpg --batch --quiet --import "$tmp/hashicorp.asc"
-  gpg --batch --with-colons --fingerprint | grep -q "^fpr:::::::::${KEY_FPR}:" \
-    || die "downloaded HashiCorp key does not match pinned fingerprint"
-  gpg --batch --verify "$tmp/SHA256SUMS.sig" "$tmp/SHA256SUMS" 2>/dev/null \
-    || die "SHA256SUMS signature verification failed"
+  # Pin the SIGNER, not just the key's presence: the key file could carry extra
+  # keys. VALIDSIG's last field is the signing key's primary fingerprint.
+  gpg --batch --status-fd 1 --verify "$tmp/SHA256SUMS.sig" "$tmp/SHA256SUMS" 2>/dev/null \
+    | awk '$2 == "VALIDSIG" {print $NF}' | grep -qx "$KEY_FPR" \
+    || die "SHA256SUMS is not validly signed by $KEY_FPR"
 
   log "Verifying checksum of $zip"
   (cd "$tmp" && grep " ${zip}\$" SHA256SUMS | sha256sum -c --quiet -) \
