@@ -17,6 +17,8 @@
 | RB-7 | Migrate the stack to a new cluster | **yes** |
 | RB-8 | Redis restart and session loss | **yes** |
 | RB-9 | Changing the app through Portainer without losing configuration | **yes** |
+| RB-10 | Datasource probe — is the baked DB address an IP or a hostname? | isolated namespace |
+| RB-11 | Stand up the pilot stack on this server | isolated namespace |
 
 ---
 
@@ -281,3 +283,81 @@ curl -s -o /dev/null -w 'assetlinks: HTTP %{http_code}\n' https://app.rentek.ore
 ```
 
 To make the UI safe again, paste the contents of `manifests/rentek/30-rentek-app2-deployment.yaml` and `31-rentek-service.yaml` into stack 13's editor so Portainer's stored copy matches production (open question O1a).
+
+---
+
+## RB-10 — Datasource probe (is the baked DB address an IP or a hostname?)
+
+Answers open question O1, which decides the mechanism used by every later migration step (`docs/migration-plan.md` Step 1.5). Runs in its own namespace with egress blocked, so the production database is never touched.
+
+**Do not skip step 2.** An unrestricted second instance of the app against the production database could attempt a GeneXus reorganisation or GAM initialisation.
+
+```bash
+K="/snap/bin/microk8s kubectl"
+
+# 1. isolated namespace + pull secret (copied without exposing its content)
+$K create namespace rentek-probe
+$K -n rentek get secret registry-1 -o json \
+  | jq 'del(.metadata.namespace,.metadata.resourceVersion,.metadata.uid,.metadata.creationTimestamp,.metadata.managedFields)' \
+  | $K -n rentek-probe apply -f -
+
+# 2. deny-all egress except cluster DNS, then PROVE it before the app starts
+cat <<'EOF' | $K apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: deny-egress-except-dns, namespace: rentek-probe }
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+  - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } } }]
+    ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+EOF
+
+$K -n rentek-probe run netcheck --image=busybox:1.36 --restart=Never -it --rm -- \
+  sh -c 'nc -z -w3 162.55.210.53 31984 && echo "EGRESS OPEN - STOP, DO NOT CONTINUE" || echo "egress blocked - safe to continue"'
+
+# 3. only if the line above says "safe to continue": start the app and read its startup errors
+$K -n rentek-probe create deployment probe --image=oreedo/rentek:0.6.8
+$K -n rentek-probe patch deployment probe -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"registry-1"}]}}}}'
+sleep 60
+$K -n rentek-probe logs deploy/probe --tail=100 | grep -i -E 'sql|connect|resolve|host|network|timeout' | head -20
+
+# 4. what DNS names did it ask for? (a hostname datasource shows up here)
+$K -n kube-system logs deploy/coredns --since=3m | grep -v 'cluster.local' | tail -20
+```
+
+Interpretation: a **DNS/resolution error naming a host** means the datasource is that hostname → use `hostAliases` later. A **TCP timeout to 162.55.210.53** means it is an IP literal → use the pod-local DNAT init container.
+
+Clean up (always): `$K delete namespace rentek-probe`
+
+---
+
+## RB-11 — Stand up the pilot stack on this server
+
+Full-journey rehearsal against **restored** data, with production untouched. Rollback is deleting the namespace.
+
+Prerequisites: RB-10 completed, a current backup (RB-3a), and `manifests/rentek/` up to date (RB-9).
+
+```bash
+K="/snap/bin/microk8s kubectl"
+$K create namespace rentek-pilot
+```
+
+1. **Pilot database.** Deploy a second MSSQL (own PVC, NodePort e.g. 31985) in `rentek-pilot`, then restore `Ren_DB` and `Ren_GAM` into it from `/home/mssql/data/data/backups/*.bak` (RB-3b) and recreate the `oreedo_user` login. Confirm table counts 232 / 85.
+2. **Redirect.** Apply the mechanism RB-10 selected, pointing at the pilot database service — never at 162.55.210.53:31984.
+3. **Block outbound push.** The image carries real OneSignal credentials, so deny egress to the internet except the pilot database and, if upload testing is wanted, Azure Blob. Without this the pilot can notify real users.
+4. **App and Redis.** Apply `manifests/rentek/` into `rentek-pilot` with the namespace replaced, its own Redis, and the ingress host changed to `pilot.rentek.oreedo.co` — that name already resolves (wildcard A record) and is already covered by the wildcard certificate, so no DNS or TLS work is needed.
+5. **Verify the journey:**
+
+```bash
+curl -s -o /dev/null -w 'pilot: HTTP %{http_code}\n' https://pilot.rentek.oreedo.co/mobilewebapp.mwapphome
+curl -s -o /dev/null -w 'assetlinks: HTTP %{http_code}\n' https://pilot.rentek.oreedo.co/.well-known/assetlinks.json
+$K -n rentek-pilot logs deploy/rentek-app2 --tail=30            # expect "Session started", no SQL errors
+```
+
+Then log in through GAM, open a page that reads data, and compare against production. Confirm from the **pilot** database that the connection arrived there (`sys.dm_exec_connections`) — that is the proof the redirect works and production was not used.
+
+**Note on Azure Blob:** the pilot uses the same storage account as production, because those credentials are baked into the image. Read tests are safe; avoid destructive file operations, and delete any test uploads afterwards.
+
+Tear down: `$K delete namespace rentek-pilot`

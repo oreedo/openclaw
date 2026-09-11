@@ -119,6 +119,91 @@ bash scripts/cluster/rentek-verify-live.sh --kubectl kubectl
 
 ---
 
+## Step 1.5: Transition architecture, pilot and gradual migration
+
+A single big-bang move of Rentek is risky for one reason: the database endpoint and every credential are GeneXus-encrypted **inside the image** (`docs/rentek/RENTEK_SOURCE_ANALYSIS.md` §4.1, finding F1), so the app cannot simply be told to use a new database. This section turns that into a sequence of small, reversible steps.
+
+### The enabler: the app talks to a routable address
+
+The app connects to `162.55.210.53:31984` — the node's public IP on the MSSQL NodePort — proven from SQL Server itself (`oreedo_user` connecting from that address). Because that is a *routable* destination rather than a cluster DNS name, it can be redirected **per pod**, with no image change:
+
+```yaml
+# init container in the app pod; the rule lives only in THIS pod's network namespace
+initContainers:
+- name: db-redirect
+  image: alpine:3.20
+  securityContext: { capabilities: { add: ["NET_ADMIN"] } }
+  command: ["sh","-c","apk add --no-cache iptables >/dev/null &&     iptables -t nat -A OUTPUT -p tcp -d 162.55.210.53 --dport 31984     -j DNAT --to-destination ${TARGET_DB_HOST}:${TARGET_DB_PORT}"]
+```
+
+This is a **temporary shim**, not the destination: it is invisible to anyone reading the Deployment casually, it must be re-applied on every pod start (the init container does that), and it should be removed once the image is rebuilt with a proper datasource. Its value is that it decouples "move the workload" from "rebuild in GeneXus", and it is reversible by deleting the init container.
+
+If instead the encrypted datasource turns out to be a *hostname*, the same job is done more cleanly with `hostAliases` — which is why the probe below runs first.
+
+### P0 — Datasource probe (answers open question O1)
+
+Cheapest possible experiment, isolated from production: an app pod in its own namespace with **all egress blocked except DNS**. Its startup error tells us which mechanism to use:
+
+| Observed in the pod log | Meaning | Mechanism for every later step |
+|---|---|---|
+| DNS resolution failure for a name | datasource is a hostname | `hostAliases` — clean, no privileges |
+| TCP timeout to `162.55.210.53:31984` | datasource is an IP literal | pod-local DNAT init container |
+
+**Safety rule:** verify the egress policy with a throwaway `busybox` pod *before* starting the application image. An unrestricted second instance of the app against the production database could attempt GeneXus reorganisation or GAM initialisation. Procedure: `docs/runbooks/RUNBOOKS.md` RB-10.
+
+### P1 — Pilot on the source server (no new hardware)
+
+Prove the manifests, the redirect and the full user journey without touching production objects:
+
+| Component | Pilot choice | Why it is safe |
+|---|---|---|
+| Namespace | `rentek-pilot` | production objects untouched; rollback = delete the namespace |
+| Database | a second MSSQL pod with `Ren_DB`/`Ren_GAM` **restored from backup** | real data, zero risk to the live database |
+| Redirect | P0's mechanism, pointing at the pilot database | proves the technique that the migration depends on |
+| Hostname | `pilot.rentek.oreedo.co` | already resolves (wildcard A record) and is already covered by the `*.rentek.oreedo.co` certificate — no DNS or TLS work |
+| Redis | its own deployment | sessions never mix |
+| **OneSignal** | **egress blocked** | otherwise the pilot sends push notifications to real users |
+| **Azure Blob** | same account (credentials are baked in) — read freely, avoid destructive tests, or block egress and accept that uploads fail | the one dependency a pilot cannot fully isolate |
+
+What P1 validates: the exported manifests deploy cleanly, GAM login works against restored data, the redirect works, and the app behaves with a database that is not the original. What it does not validate: cross-host latency.
+
+### P2–P4 — Target build, deploy and rehearsal
+
+- **P2 Build the target**: Kubernetes, ingress controller, storage class, cert-manager with the DNSimple webhook (reuse `setup-cert-manager-oreedo-co.sh`). DNS-01 issues certificates **before** any traffic moves, so TLS is ready in advance.
+- **P3 Deploy and test without DNS**: bring the stack up on the target and exercise it through a client-side override — `curl --resolve app.rentek.oreedo.co:443:<NEW_IP>` and a hosts entry for browsers. Production DNS is untouched, so there is nothing to roll back.
+- **P4 Rehearse the data cutover and time it**: final backup → restore → verify table counts (232 / 85). Today's data is ~0.4 GB and compresses to a few MB, so the window should be minutes; measure it rather than assume.
+
+### P5 — Choose how gradual to be
+
+| Strategy | Sequence | Best when | Trade-off |
+|---|---|---|---|
+| **A. Split move, database first** (recommended gradual path) | move DB to target → app on the source redirects to it → later move the app | you want two small reversible steps | every query crosses hosts until the app follows; needs a fast private link |
+| **B. Lift and shift with the shim** | move app + DB together in one window, shim in place, rebuild the image later | you want the shortest exposure and a single window | the shim is live in production until the rebuild |
+| **C. Rebuild first** | GeneXus rebuild with the target datasource → then move | GeneXus access and a build pipeline are available now | slowest to start; needs the build environment |
+
+All three converge on P7. **B is the pragmatic default**; A is the answer if a single window is unacceptable; C is the cleanest if the rebuild can happen soon.
+
+A true parallel run (both sites serving users at once) is **not** available here: two app instances would need two databases, and there is no replication between them. Keep the canary phase read-mostly and short.
+
+### P6 — Cutover
+
+Follow `docs/runbooks/RUNBOOKS.md` RB-6 (lower TTL to 60 s a day ahead, freeze writes, final delta restore, switch the A record, verify, keep the source intact for the agreed rollback window).
+
+### P7 — Remove the scaffolding
+
+1. Rebuild the image in GeneXus with the target datasource and drop the redirect init container.
+2. Rotate what the image exposes: OneSignal REST key, Azure Storage keys, the `oreedo_user` password (F6).
+3. Move off SQL Server Developer Edition (F3), enable scheduled backups (`scripts/cluster/mssql-backup.sh`, F4), add probes and resource limits (F7), and close the NodePort exposure (F2).
+
+### Decision checkpoints
+
+| After | Question | If the answer is bad |
+|---|---|---|
+| P0 | IP literal or hostname? | either is workable; it only selects the mechanism |
+| P1 | Does the app run against a restored database via the redirect? | stop and go to strategy C — a GeneXus rebuild is then on the critical path |
+| P4 | Is the measured cutover window acceptable? | add log shipping or schedule a longer maintenance window |
+| P6 | Does the target serve real traffic correctly within the rollback window? | switch the A record back; the source is still intact |
+
 ## Step 2: Prepare Target Environment
 
 ### 2.1 Install Kubernetes
