@@ -72,6 +72,8 @@ unset VAULT_TOKEN; VAULT_ADDR=https://vault.oreedo.co vault login -no-print -met
 bash scripts/vault/vault-backup.sh --revoke-token  # -> /root/backups/vault/<cluster>-<UTC>.snap (+ .sha256, .inspect.txt)
 ```
 
+A portable plaintext copy of the `gx/` KV secrets — for a target Vault that keeps its own unseal keys — comes from `scripts/vault/vault-kv-export.sh`; see `docs/vault/VAULT_IMPORT_GUIDE.md`.
+
 The password prompt runs in raw mode: Backspace is taken literally, so on a typo press Ctrl-C and retype. `-no-print` keeps the token out of the terminal (it lands in `/root/.vault-token`, 0600). The script checks the token's capability first, validates the snapshot with `vault operator raft snapshot inspect`, and writes root-only files outside the repo. First backup: 2026-09-11, Raft index 4054 (current at capture). Copy snapshots off this host.
 
 Also secure separately:
@@ -154,14 +156,10 @@ Also ensure:
 ## Step 3: Restore Critical Components
 
 ### 3.1 Vault
-1. Deploy Vault using Helm on the new cluster, with Raft storage, and initialize it.
-2. Restore the snapshot with a token allowed `update` on `sys/storage/raft/snapshot-force`:
+Two options, both with step-by-step commands in `docs/vault/VAULT_IMPORT_GUIDE.md`:
 
-```bash
-vault operator raft snapshot restore -force <cluster>-<UTC>.snap
-```
-
-`-force` is required because the new cluster was initialized with different unseal keys (without it Vault rejects the snapshot: "could not verify hash file"). The snapshot carries the source keyring, so afterwards unseal with the **source** cluster's Shamir keys (3 of 5). The restore also replaces the token store: the new cluster's init root token stops working, so authenticate with credentials from the source. Everything written to the source after the snapshot is lost. Restores above 1 MiB fail through ingress-nginx's default body limit (413) — restore via `kubectl port-forward` to the Vault pod instead of the ingress.
+1. **Snapshot restore** — everything (engines, policies, auth methods and users, identity). Deploy Vault 1.18.5 with Raft storage and initialize it, then restore with a token allowed `update` on `sys/storage/raft/snapshot-force`: `vault operator raft snapshot restore -force <cluster>-<UTC>.snap`, through a `kubectl port-forward` rather than the ingress (its 1 MiB body limit answers `413`). `-force` is required because the new cluster has different unseal keys. Afterwards the cluster unseals with the **source** cluster's Shamir keys (3 of 5), the target's init root token stops working, and anything written to the source after the snapshot is lost.
+2. **KV JSON import** — only the `gx/` secrets, into a Vault that keeps its own fresh unseal keys: `scripts/vault/vault-kv-export.sh` on the source, then `scripts/vault/vault-kv-import.sh` against the target. Policies, auth methods and users have to be recreated by hand.
 
 3. Verify:
 - unseal flow
