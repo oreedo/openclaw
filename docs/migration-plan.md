@@ -121,9 +121,23 @@ bash scripts/cluster/rentek-verify-live.sh --kubectl kubectl
 
 ## Step 1.5: Transition architecture, pilot and gradual migration
 
-A single big-bang move of Rentek is risky for one reason: the database endpoint and every credential are GeneXus-encrypted **inside the image** (`docs/rentek/RENTEK_SOURCE_ANALYSIS.md` §4.1, finding F1), so the app cannot simply be told to use a new database. This section turns that into a sequence of small, reversible steps.
+Moving Rentek all at once is risky for one reason: the database endpoint and every credential are GeneXus-encrypted **inside the image** (`docs/rentek/RENTEK_SOURCE_ANALYSIS.md` §4.1, finding F1), so the app cannot simply be told to use a new database. This section turns that into a sequence of small, reversible steps.
 
-### The enabler: the app talks to a routable address
+### In simple words
+
+The app cannot be told to use a new database, because the address is locked inside the image. But the app uses a normal IP address and port, so we can send that traffic to a different database at the network level. No new image is needed for the move. We build the new image later, when there is time.
+
+The steps, smallest first:
+
+1. **Test.** Start one copy of the app with no network access. Read the error. It tells us if the locked address is a number or a name.
+2. **Practice here.** Copy the database. Run a second copy of the app against the copy, at `pilot.rentek.oreedo.co`. Delete it when done.
+3. **Build the new server** and get its certificate ready early.
+4. **Test the new server** without changing the website address.
+5. **Time the data copy.**
+6. **Change the website address.** Keep the old server, so you can go back.
+7. **Clean up:** new image, new keys, backups.
+
+### What makes this possible: the app uses a normal IP address
 
 The app connects to `162.55.210.53:31984` — the node's public IP on the MSSQL NodePort — proven from SQL Server itself (`oreedo_user` connecting from that address). Because that is a *routable* destination rather than a cluster DNS name, it can be redirected **per pod**, with no image change:
 
@@ -136,7 +150,7 @@ initContainers:
   command: ["sh","-c","apk add --no-cache iptables >/dev/null &&     iptables -t nat -A OUTPUT -p tcp -d 162.55.210.53 --dport 31984     -j DNAT --to-destination ${TARGET_DB_HOST}:${TARGET_DB_PORT}"]
 ```
 
-This is a **temporary shim**, not the destination: it is invisible to anyone reading the Deployment casually, it must be re-applied on every pod start (the init container does that), and it should be removed once the image is rebuilt with a proper datasource. Its value is that it decouples "move the workload" from "rebuild in GeneXus", and it is reversible by deleting the init container.
+This is a **temporary fix**, not the end state: it is invisible to anyone reading the Deployment casually, it must be re-applied on every pod start (the init container does that), and it should be removed once the image is rebuilt with a proper datasource. Its value is that it separates "move the workload" from "rebuild in GeneXus", and you can undo it by deleting the init container.
 
 If instead the encrypted datasource turns out to be a *hostname*, the same job is done more cleanly with `hostAliases` — which is why the probe below runs first.
 
@@ -167,29 +181,29 @@ Prove the manifests, the redirect and the full user journey without touching pro
 
 What P1 validates: the exported manifests deploy cleanly, GAM login works against restored data, the redirect works, and the app behaves with a database that is not the original. What it does not validate: cross-host latency.
 
-### P2–P4 — Target build, deploy and rehearsal
+### P2–P4 — Build the new server, deploy, practice
 
 - **P2 Build the target**: Kubernetes, ingress controller, storage class, cert-manager with the DNSimple webhook (reuse `setup-cert-manager-oreedo-co.sh`). DNS-01 issues certificates **before** any traffic moves, so TLS is ready in advance.
 - **P3 Deploy and test without DNS**: bring the stack up on the target and exercise it through a client-side override — `curl --resolve app.rentek.oreedo.co:443:<NEW_IP>` and a hosts entry for browsers. Production DNS is untouched, so there is nothing to roll back.
-- **P4 Rehearse the data cutover and time it**: final backup → restore → verify table counts (232 / 85). Today's data is ~0.4 GB and compresses to a few MB, so the window should be minutes; measure it rather than assume.
+- **P4 Practice the data switch and time it**: final backup → restore → verify table counts (232 / 85). Today's data is ~0.4 GB and compresses to a few MB, so the window should be minutes; measure it rather than assume.
 
 ### P5 — Choose how gradual to be
 
 | Strategy | Sequence | Best when | Trade-off |
 |---|---|---|---|
 | **A. Split move, database first** (recommended gradual path) | move DB to target → app on the source redirects to it → later move the app | you want two small reversible steps | every query crosses hosts until the app follows; needs a fast private link |
-| **B. Lift and shift with the shim** | move app + DB together in one window, shim in place, rebuild the image later | you want the shortest exposure and a single window | the shim is live in production until the rebuild |
+| **B. Move everything at once, with the redirect** | move app + DB together in one window, redirect in place, rebuild the image later | you want the shortest exposure and a single window | the redirect stays in production until the image is rebuilt |
 | **C. Rebuild first** | GeneXus rebuild with the target datasource → then move | GeneXus access and a build pipeline are available now | slowest to start; needs the build environment |
 
-All three converge on P7. **B is the pragmatic default**; A is the answer if a single window is unacceptable; C is the cleanest if the rebuild can happen soon.
+All three converge on P7. **B is the usual choice**; A is the answer if a single window is unacceptable; C is the cleanest if the rebuild can happen soon.
 
-A true parallel run (both sites serving users at once) is **not** available here: two app instances would need two databases, and there is no replication between them. Keep the canary phase read-mostly and short.
+You cannot run both servers for real users at the same time: two app instances would need two databases, and there is no replication between them. If you run a test phase with a few users, keep it short and let it mostly read data, not write it.
 
 ### P6 — Cutover
 
 Follow `docs/runbooks/RUNBOOKS.md` RB-6 (lower TTL to 60 s a day ahead, freeze writes, final delta restore, switch the A record, verify, keep the source intact for the agreed rollback window).
 
-### P7 — Remove the scaffolding
+### P7 — Remove the temporary parts
 
 1. Rebuild the image in GeneXus with the target datasource and drop the redirect init container.
 2. Rotate what the image exposes: OneSignal REST key, Azure Storage keys, the `oreedo_user` password (F6).

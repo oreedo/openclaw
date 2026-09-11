@@ -335,7 +335,7 @@ Clean up (always): `$K delete namespace rentek-probe`
 
 ## RB-11 — Stand up the pilot stack on this server
 
-Full-journey rehearsal against **restored** data, with production untouched. Rollback is deleting the namespace.
+Full-journey practice run against **restored** data, with production untouched. Rollback is deleting the namespace.
 
 Prerequisites: RB-10 completed, a current backup (RB-3a), and `manifests/rentek/` up to date (RB-9).
 

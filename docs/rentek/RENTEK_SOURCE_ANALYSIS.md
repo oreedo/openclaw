@@ -2,6 +2,22 @@
 
 > Host `oreedo-ubuntu` (162.55.210.53), MicroK8s v1.30.14. Everything below was verified **live on 2026-09-11** with read-only commands; where a doc elsewhere in this repo disagrees, this file is the observed truth. Re-collect with `scripts/cluster/rentek-source-inventory.sh`. Operational procedures live in `docs/runbooks/RUNBOOKS.md`.
 
+## 0. In simple words
+
+What Rentek is, and what matters for moving it:
+
+- The website `app.rentek.oreedo.co` runs one app in Kubernetes on this server. There is only one copy of it.
+- The app keeps its data in SQL Server, which runs on the same server in a different namespace.
+- **The database address and all passwords are locked inside the Docker image.** You cannot change them with a Kubernetes setting. To point the app at a different database, someone must build a new image in GeneXus.
+- User files (pictures) are **not** on this server. They go to Microsoft Azure storage on the internet.
+- Logins are kept in Redis. If Redis restarts, everyone is logged out. Nothing is lost.
+- The `rentek-pictures-pvc` disk is **empty**. Nothing to copy.
+- The certificate renews by itself. A job copies it into the app every 30 minutes.
+- The website name points to this server's IP address, `162.55.210.53`. There is no IPv6 address.
+- There were **no database backups since October 2025**. This was fixed on 2026-09-11.
+
+So, to move Rentek you need: the two databases, the Azure storage account, the Docker image, and a new address for the database inside that image.
+
 ## 1. Executive summary
 
 Rentek is a **GeneXus .NET application** served from a single namespace, backed by SQL Server **outside** that namespace, with sessions in Redis and user files in **Azure Blob Storage**. The public path is:
@@ -142,7 +158,7 @@ Proven at the database side (`sys.dm_exec_connections`): client address **162.55
 
 `LUCENE_INDEX_DIRECTORY` is `..\Web\LuceneIndex` — a Windows-style path that on Linux creates a literal directory named `..\Web\LuceneIndex` inside `/app`. The search index therefore lives in the container filesystem and is lost on every restart (F14).
 
-## 5. Container image and provenance
+## 5. Container image: where it comes from
 
 | Item | Value |
 |---|---|
@@ -164,7 +180,7 @@ Because the image is the only source of configuration, **the image is the deploy
 | Deployment | `mssql-mssql-deployment`, 1 replica, env `ACCEPT_EULA=Y`, `MSSQL_PID=Developer`, `SA_PASSWORD` as a **literal value in the manifest** |
 | Service | `mssql-mssql-service`, NodePort **1433 → 31984**, ClusterIP 10.152.183.241 |
 | Storage | PVC `mssql-mssql-pvc` 50 GiB, SC `manual` → PV `mssql-mssql-pv`, `hostPath: /home/mssql/data`, reclaim **Retain**; 2.1 GB used on disk |
-| Ingress | `mssql-mssql-ingress` on class `nginx` → **inert**, the controller only serves class `public` (F11) |
+| Ingress | `mssql-mssql-ingress` on class `nginx` → **does nothing**, the controller only serves class `public` (F11) |
 
 Databases:
 
@@ -288,9 +304,9 @@ Deployments are performed **by hand, in place, through the Portainer web UI** �
 | `last-applied-configuration` on the live object | image **0.6.6**, no init container |
 | **Live cluster (truth)** | image 0.6.8 **plus** init container `setup-assetlinks` and the two `.well-known` volumes |
 
-**Operational trap:** pressing *Update the stack* on stack 13 re-applies the stored file and silently removes the init container and the assetlinks volumes, which breaks `/.well-known/assetlinks.json` and therefore Android App Links. The same applies to any Portainer-driven redeploy of this stack.
+**Danger:** pressing *Update the stack* on stack 13 re-applies the stored file and silently removes the init container and the assetlinks volumes, which breaks `/.well-known/assetlinks.json` and therefore Android App Links. The same applies to any Portainer-driven redeploy of this stack.
 
-**Remediation shipped with this analysis:** `scripts/cluster/rentek-export-manifests.sh` regenerates an apply-ready manifest set from the live cluster into `manifests/rentek/`. It was verified with `kubectl diff -f manifests/rentek/`, which reports **no differences** — the files reproduce production exactly, including the init container. Use them (not Git, not the Portainer stack files) as the migration input, and re-export after every Portainer change so the diff is reviewable.
+**The fix, included with this analysis:** `scripts/cluster/rentek-export-manifests.sh` regenerates an apply-ready manifest set from the live cluster into `manifests/rentek/`. It was verified with `kubectl diff -f manifests/rentek/`, which reports **no differences** — the files reproduce production exactly, including the init container. Use them (not Git, not the Portainer stack files) as the migration input, and re-export after every Portainer change so the diff is reviewable.
 
 ## 11. Findings and risks
 
@@ -306,7 +322,7 @@ Deployments are performed **by hand, in place, through the Portainer web UI** �
 | F8 | Medium | Redis has no volume: a restart drops all sessions (users are logged out) |
 | F9 | Medium | Mutable tags with `imagePullPolicy: Always` and no digest pinning: a re-pushed `0.6.8` silently changes production; rollback depends on the node's containerd cache |
 | F10 | Medium | Ingress has no `proxy-body-size`, so the nginx default **1 MiB** caps uploads while the app advertises 528 MB. Verify real upload paths before/after migration |
-| F11 | Low | The controller runs `--ingress-class=public`; `mssql-mssql-ingress` (class `nginx`) is dead configuration |
+| F11 | Low | The controller runs `--ingress-class=public`; `mssql-mssql-ingress` (class `nginx`) is unused configuration |
 | F12 | Low | No AAAA records and no IPv6 ingress path, although the host has IPv6 |
 | F13 | Low | Leftovers: `rentek-app` 0.6.6 still running, empty `rentek-pictures-pvc`, unused `docker-auth-config`, 5 obsolete TLS secrets |
 | F14 | Low | Lucene search index is ephemeral (Windows-style path inside the container) |

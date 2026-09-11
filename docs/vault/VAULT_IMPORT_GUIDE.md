@@ -10,7 +10,7 @@
 | What moves | the KV secrets of one mount (`gx/`) and their KV metadata | everything: all secret engines, policies, auth methods and users, identity, tokens, config |
 | Target Vault | any Vault, any storage; keeps its own unseal keys | a fresh Vault with Raft storage; afterwards it unseals with **this** cluster's keys (3 of 5) |
 | Permission needed on the target | write on `gx/` only | `update` on `sys/storage/raft/snapshot-force` (root token of the fresh Vault) |
-| Use it when | you want a clean Vault and will recreate policies and auth yourself | you want an exact clone, identities and policies included |
+| Use it when | you want a clean Vault and will create policies and logins again yourself | you want an exact clone, identities and policies included |
 
 ## The files
 
