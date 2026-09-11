@@ -9,6 +9,10 @@
 │   └── KUBERNETES_CLUSTER.md    # Full MicroK8s cluster inventory
 ├── vault/
 │   └── VAULT_IMPORT_GUIDE.md    # Loading Vault data into another Vault
+├── rentek/
+│   └── RENTEK_SOURCE_ANALYSIS.md # Full analysis of the Rentek stack on the source server
+├── runbooks/
+│   └── RUNBOOKS.md              # Operational procedures (health, backup, TLS, deploy, cutover)
 ├── principles.md                # Working principles (source of truth)
 ├── migration-plan.md            # Script-driven plan for migrating off Hetzner
 ├── assistant-operating-notes.md # Practical working rules for the assistant
