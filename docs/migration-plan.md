@@ -55,11 +55,24 @@ kubectl -n portainer get deploy,svc,ingress,cm,secret,pvc -o yaml > portainer-co
 ### 1.3 Specific Components
 
 #### Vault
-Create a backup of Vault:
+Source: Bitnami chart, `bitnami/vault:1.18.5`, StatefulSet `default/vault-server` (1 replica), Raft integrated storage, Shamir seal (5 shares / threshold 3), reachable at `https://vault.oreedo.co`.
+
+Backup = Raft snapshot, taken by the userpass identity `claude-code`. Its `claude-code-policy` stays read-only; the snapshot line is the only addition to its `gx/*` read/list rule:
+
+```hcl
+path "sys/storage/raft/snapshot" {
+  capabilities = ["read"]   # GET = download a snapshot; restore needs update, deliberately not granted
+}
+```
 
 ```bash
-vault operator snapshot save vault-backup.snap
+bash scripts/vault/install-vault-cli.sh          # verified Vault CLI 1.18.5 (idempotent)
+# human, in their own terminal (password never passes through the assistant):
+VAULT_ADDR=https://vault.oreedo.co vault login -method=userpass username=claude-code
+bash scripts/vault/vault-backup.sh --revoke-token  # -> /root/backups/vault/<cluster>-<UTC>.snap (+ .sha256, .inspect.txt)
 ```
+
+The script checks the token's capability first, validates the snapshot with `vault operator raft snapshot inspect`, and writes root-only files outside the repo. First backup: 2026-09-11, Raft index 4054 (current at capture). Copy snapshots off this host.
 
 Also secure separately:
 - unseal keys
@@ -141,12 +154,14 @@ Also ensure:
 ## Step 3: Restore Critical Components
 
 ### 3.1 Vault
-1. Deploy Vault using Helm on the new cluster.
-2. Restore snapshot:
+1. Deploy Vault using Helm on the new cluster, with Raft storage, and initialize it.
+2. Restore the snapshot with a token allowed `update` on `sys/storage/raft/snapshot-force`:
 
 ```bash
-vault operator snapshot restore vault-backup.snap
+vault operator raft snapshot restore -force <cluster>-<UTC>.snap
 ```
+
+`-force` is required because the new cluster was initialized with different unseal keys (without it Vault rejects the snapshot: "could not verify hash file"). The snapshot carries the source keyring, so afterwards unseal with the **source** cluster's Shamir keys (3 of 5).
 
 3. Verify:
 - unseal flow
