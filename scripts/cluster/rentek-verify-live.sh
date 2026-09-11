@@ -59,11 +59,11 @@ main() {
   echo
 
   echo "== Active image and pull secret =="
-  run_k "-n $NAMESPACE get deploy rentek-app2 -o jsonpath='image={.spec.template.spec.containers[0].image}{"\n"}pullSecret={.spec.template.spec.imagePullSecrets[0].name}{"\n"}'"
+  run_k "-n $NAMESPACE get deploy rentek-app2 -o jsonpath='image={.spec.template.spec.containers[0].image}{\"\\n\"}pullSecret={.spec.template.spec.imagePullSecrets[0].name}{\"\\n\"}'"
   echo
 
   echo "== Secondary deployment comparison =="
-  run_k "-n $NAMESPACE get deploy rentek-app -o jsonpath='image={.spec.template.spec.containers[0].image}{"\n"}volumeMount={.spec.template.spec.containers[0].volumeMounts[0].mountPath}{"\n"}'" || true
+  run_k "-n $NAMESPACE get deploy rentek-app -o jsonpath='image={.spec.template.spec.containers[0].image}{\"\\n\"}volumeMount={.spec.template.spec.containers[0].volumeMounts[0].mountPath}{\"\\n\"}'" || true
   echo
 
   echo "== Assetlinks config =="
