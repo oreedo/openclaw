@@ -178,3 +178,61 @@ Today's outage: the app had run for 137 days from a cached image. Restarting it 
 | 6 | Securely delete `/root/backups/vault/gx-kv-export-*.json` from the old server | plaintext copy of Vault secrets |
 | 7 | Optional: remove ~30 leftover `_acme-challenge` records in the `oreedo.co` zone | old renewal leftovers; harmless but untidy |
 | 8 | Decide when to decommission the old server | data is still there; it is the way back |
+
+---
+
+## Before the old server can be shut down
+
+The old server is planned for retirement. Rentek has moved, but the machine still runs other things. Work through this list first.
+
+### 1. What still runs there (checked 2026-09-12)
+
+| Service | Public address | Status |
+|---|---|---|
+| **Vault** (`vault-server` + injector) | `vault.oreedo.co` | running — **holds the secrets used by Rentek and others** |
+| Argo CD (7 parts) | `argocd.oreedo.co` | running |
+| Jenkins | `jenkins.oreedo.co` | running |
+| Devtron (+ its PostgreSQL) | `devtron.oreedo.co` | running |
+| Portainer | `k8s.portainer.oreedo.co` | running |
+| n8n | `n8n.oreedo.co` | running |
+| Redis of the old Rentek | — | running, no longer needed |
+| `nginx-test1` | — | test leftover |
+| Keycloak, Odoo, Camunda, PostgreSQL | several `.oreedo.co` names | already scaled to 0, ingresses still exist |
+| MSSQL, `rentek-app`, `rentek-app2` | — | **stopped, migrated** |
+
+### 2. The certificate problem (do this first)
+
+The certificate `oreedo-co` in namespace `platform-tls` covers **all** `oreedo.co` names, including `*.rentek.oreedo.co`. It is issued **on the old server** and copied into other namespaces there every 30 minutes.
+
+When the old server is switched off:
+
+- that certificate stops renewing;
+- the copy now used by Rentek on the new server (`tls-oreedo-co-copy`) still works until **2026-10-23**, then expires;
+- every other `.oreedo.co` service that stays alive elsewhere loses automatic renewal too.
+
+**Action:** set up issuance on the new server before retirement. The new server already has cert-manager, the DNSimple webhook, the API token and, since step 20, permission for the `oreedo.co` zone. Request a wildcard certificate for `*.rentek.oreedo.co` (and any other names that must survive), then point the ingress at it instead of the copy.
+
+### 3. Vault
+
+Vault holds the credentials used by Rentek (Azure storage, OneSignal, Docker, GAM, MSSQL). It must move or be replaced before shutdown. The procedure is written: `docs/vault/VAULT_IMPORT_GUIDE.md` (snapshot restore for everything, or the KV export/import for the `gx/` secrets). A verified snapshot and a plaintext export already exist under `/root/backups/vault/`.
+
+### 4. Data still on the old machine
+
+All of these are hostpath volumes on the old server. Copy or discard each deliberately:
+
+- `/home/mssql/data` — 2.1 GB, the old database plus 12 backups (already copied to the new server)
+- Vault storage (`data-vault-server-0`)
+- Jenkins (20 GiB), Devtron PostgreSQL (20 GiB), Portainer (10 GiB), Odoo, Camunda Elasticsearch and Zeebe, PostgreSQL
+
+### 5. DNS names pointing at the old server
+
+These still resolve to 162.55.210.53 and must be repointed or removed: `argocd`, `jenkins`, `devtron`, `k8s.portainer`, `n8n`, `keycloak`, `odoo`, `vault`, and the `*.camunda` names. `mssql` and `app.rentek` already point to the new server.
+
+### 6. Final sequence
+
+1. Move or retire each service above, and repoint its DNS name.
+2. Set up certificate issuance on the new server (section 2).
+3. Move Vault (section 3).
+4. Take final backups of every volume in section 4 and copy them off the machine.
+5. Leave the server switched on but idle for an agreed period as the way back.
+6. Only then shut it down and cancel the subscription.
