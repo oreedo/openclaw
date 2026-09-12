@@ -2,23 +2,26 @@
 
 > Every change made to a live system, in order, with the exact way to undo it. Newest day first. Keep this file updated **as changes happen**, not afterwards.
 
-## Where things stand right now (2026-09-12 04:25 UTC)
+## Where things stand right now (2026-09-12 04:40 UTC)
 
 | Item | State |
 |---|---|
-| Website `app.rentek.oreedo.co` | **UP**, HTTP 200 |
-| App version serving users | **0.6.6 (temporary)** — the normal 0.6.8 cannot start, see Problem 1 |
+| Website `app.rentek.oreedo.co` | **UP**, HTTP 200, assetlinks HTTP 200 |
+| App version serving users | **0.6.8** (normal version, restored) |
+| Where the app runs | still the **old** server |
 | Database used by the app | **NEW server** 72.62.93.145 (confirmed from the database side) |
-| Old database | still running, no longer used by the app, data still complete |
+| Old database | still running, no longer used, data still complete |
 | `mssql.oreedo.co` | points to 72.62.93.145 (public DNS) **and** is overridden inside the old cluster |
 
-### Problem 1 (open, blocking): the Docker Hub token has expired
+**Step one of the migration (database first) is complete and working.**
+
+### Problem 1 (SOLVED 04:33): the Docker Hub token had expired
 
 The stored Docker Hub credential for user `oreedo` is rejected with **HTTP 401**. Both `rentek/registry-1` and `rentek/docker-auth-config` hold the same expired token, and `/root/.docker/config.json` on the old server has it too.
 
 Consequence: the image `oreedo/rentek:0.6.8` cannot be pulled, so the normal app version cannot start. The site runs on 0.6.6 until this is fixed.
 
-**What is needed from Ahmed:** a new Docker Hub access token for the `oreedo` account with `read` access to the private repository `oreedo/rentek`.
+Ahmed logged in to Docker again at 04:31. The new credential was verified against Docker Hub, written into the `registry-1` secret, and the image pulled in 630 ms. Version 0.6.8 is running again.
 
 ### How the outage happened (honest summary)
 
@@ -51,7 +54,9 @@ Times are UTC.
 | 11 | 04:05 | Main container pull policy changed (`Always` → `IfNotPresent` → `Always`) | old server, `rentek-app2` | it is back at `Always`, the original value |
 | 12 | 04:10 | **Deleted all cached `oreedo/rentek` images from the node** (my mistake) | old server | **cannot be undone.** The images must be pulled again from Docker Hub with a valid token |
 | 13 | 04:13 | Deleted the corrupt blob `sha256:543319d2…` (an HTML page) from containerd | old server | nothing to undo; it was not a real image |
-| 14 | 04:22 | Pointed `rentek-svc` at the 0.6.6 app to restore service | old server | `kubectl -n rentek patch svc rentek-svc -p '{"spec":{"selector":{"app":"rentek-app2"}}}'` — do this once 0.6.8 runs again |
+| 14 | 04:22 | Pointed `rentek-svc` at the 0.6.6 app to restore service | old server | done in step 16 |
+| 15 | 04:33 | Replaced the `registry-1` pull secret with the new Docker login | old server, namespace `rentek` | `kubectl -n rentek get secret registry-1-backup-20260912 -o json \| jq '.metadata.name="registry-1"' \| kubectl apply -f -` |
+| 16 | 04:38 | Pointed `rentek-svc` back at 0.6.8; site verified HTTP 200 | old server | `kubectl -n rentek patch svc rentek-svc -p '{"spec":{"selector":{"app":"rentek-app"}}}'` |
 
 ### Full rollback: return everything to how it was this morning
 
@@ -76,8 +81,8 @@ The only data written to the new database since the switch is what users have do
 
 | Step | What happens | Rollback |
 |---|---|---|
-| **N1** Replace the Docker Hub token | New token from Ahmed; update `registry-1` (and `docker-auth-config`), and `/root/.docker/config.json` | keep the old secret as `registry-1-old`; restore it if the new one is wrong |
-| **N2** Start 0.6.8 again | Pull 0.6.8, then point `rentek-svc` back to `app=rentek-app2` | point the service back at `app=rentek-app` (0.6.6) |
+| ~~N1~~ **done 04:33** | Docker login refreshed and `registry-1` updated | backup secret `registry-1-backup-20260912` |
+| ~~N2~~ **done 04:38** | 0.6.8 pulled and serving again | point the service at `app=rentek-app` |
 | **N3** Copy the app to the new server | Create namespace, secret, ConfigMap, Redis, app and ingress on the new server from `manifests/rentek/`, using a test name first | delete the namespace on the new server; the old server keeps serving |
 | **N4** Test on the new server | Reach it with a host override, not public DNS | nothing to undo |
 | **N5** Change `app.rentek.oreedo.co` to the new IP | DNSimple A record (and AAAA if IPv6 is wanted) | set the A record back to 162.55.210.53 |
@@ -89,3 +94,8 @@ The only data written to the new database since the switch is what users have do
 2. Never restart a pod before checking that its image can still be pulled.
 3. Take a database backup before any step that touches data.
 4. After each step, check the website and which database it is using.
+
+### Two small improvements kept from the incident
+
+- The init container now uses **`busybox:1.36`** instead of `busybox:latest`. A fixed version is not re-downloaded on every restart, so a registry problem can no longer stop the app from starting.
+- `docker-auth-config` still holds the **old expired token**. It is not used by any pod. Delete it, or update it too, so nobody is misled later.

@@ -61,8 +61,8 @@ spec:
         - sh
         - -c
         - mkdir -p /shared/.well-known && cp /tmp/configmap/assetlinks.json /shared/.well-known/assetlinks.json
-        image: busybox:latest
-        imagePullPolicy: Always
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
         name: setup-assetlinks
         resources: {}
         terminationMessagePath: /dev/termination-log
