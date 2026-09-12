@@ -19,6 +19,7 @@
 | RB-9 | Changing the app through Portainer without losing configuration | **yes** |
 | RB-10 | Datasource probe — is the baked DB address an IP or a hostname? | isolated namespace |
 | RB-11 | Stand up the pilot stack on this server | isolated namespace |
+| RB-12 | Move the database to the new server (step 1 of the migration) | **yes** |
 
 ---
 
@@ -361,3 +362,74 @@ Then log in through GAM, open a page that reads data, and compare against produc
 **Note on Azure Blob:** the pilot uses the same storage account as production, because those credentials are baked into the image. Read tests are safe; avoid destructive file operations, and delete any test uploads afterwards.
 
 Tear down: `$K delete namespace rentek-pilot`
+
+---
+
+## RB-12 — Move the database to the new server
+
+This is step one of the migration: the database moves to the new server, the app stays on the old one, and the app finds the new database through DNS.
+
+### The two servers
+
+| | Old (source) | New (target) |
+|---|---|---|
+| Name / IP | `oreedo-ubuntu` / 162.55.210.53 | `srv1199105` / 72.62.93.145 (ssh host `hostinger_kvm8`) |
+| Kubernetes | MicroK8s 1.30.14 | MicroK8s 1.33.13 |
+| Database service | `mssql-mssql-service`, NodePort **1433:31984** | same name, same **NodePort 1433:31984** |
+| Data volume | `/home/mssql/data` | `/home/mssql/data` |
+| IPv6 | present but unused | **public IPv6 works**: `2a02:4780:41:28f6::1` |
+
+Network between them: about **5 ms**. The app will be slightly slower, not noticeably.
+
+### What is already done (2026-09-12)
+
+The database exists on the new server and holds the data: same image, same names, same NodePort 31984, `Ren_DB` 232 tables, `Ren_GAM` 85 tables, owner `oreedo_user`, and the old server can reach it.
+
+The login `oreedo_user` was copied **with its password hash and its SID**, so the password is unchanged and the database users are not orphaned. The password itself was never needed and never handled.
+
+### Repeat the data copy any time
+
+```bash
+bash scripts/cluster/mssql-copy-to-target.sh              # backup -> copy -> restore -> fix owner -> verify
+bash scripts/cluster/mssql-copy-to-target.sh --dry-run
+```
+
+The script fails loudly if a database owner does not resolve or if the table counts differ.
+
+### Before the switch: two things to prepare
+
+1. **Lower the DNS lifetime.** `mssql.oreedo.co` currently has TTL 3600 (one hour). Set it to 60 seconds in DNSimple and wait one hour. Without this, the switch takes up to an hour to reach the app.
+2. **Close the database to the internet.** Port 31984 on the new server is open to everyone. Allow only 162.55.210.53 (the old server) in the Hostinger firewall.
+
+### The switch itself
+
+**Why the app must be stopped for a few minutes:** if the app keeps running while DNS changes, some writes go to the old database and some to the new one. The data would then exist in two places, with no way to merge it.
+
+```bash
+K="/snap/bin/microk8s kubectl"
+
+# 1. stop the app (users see the site down from here)
+$K -n rentek scale deploy/rentek-app2 --replicas=0
+
+# 2. final copy, now that nothing writes any more
+bash scripts/cluster/mssql-copy-to-target.sh
+
+# 3. change the DNS record in DNSimple, by hand:
+#       mssql.oreedo.co   A   72.62.93.145
+#    then wait for it to take effect:
+watch -n5 'dig +short A mssql.oreedo.co'
+
+# 4. start the app again
+$K -n rentek scale deploy/rentek-app2 --replicas=1
+$K -n rentek rollout status deploy/rentek-app2
+
+# 5. check that the app now uses the NEW database
+curl -s -o /dev/null -w 'app: HTTP %{http_code}\n' https://app.rentek.oreedo.co/mobilewebapp.mwapphome
+ssh hostinger_kvm8 "microk8s kubectl -n default exec deploy/mssql-mssql-deployment -- bash -c 'S=\$(ls /opt/mssql-tools*/bin/sqlcmd|head -1); \$S -S localhost -U sa -P \"\$SA_PASSWORD\" -C -h -1 -W -Q \"SELECT client_net_address FROM sys.dm_exec_connections c JOIN sys.dm_exec_sessions s ON s.session_id=c.session_id WHERE s.login_name=N'oreedo_user'\"'"
+```
+
+Step 5 must show **162.55.210.53** connecting to the new server. That is the proof the app moved.
+
+### Going back
+
+Change the DNS record back to 162.55.210.53 and restart the app. The old database is still there and still complete — but anything written to the new database after the switch is not in it. So decide quickly, or copy the data back first.
