@@ -84,7 +84,7 @@ The only data written to the new database since the switch is what users have do
 |---|---|---|
 | ~~N1~~ **done 04:33** | Docker login refreshed and `registry-1` updated | backup secret `registry-1-backup-20260912` |
 | ~~N2~~ **done 04:38** | 0.6.8 pulled and serving again | point the service at `app=rentek-app` |
-| **N3** Copy the app to the new server | Create namespace, secret, ConfigMap, Redis, app and ingress on the new server from `manifests/rentek/`, using a test name first | delete the namespace on the new server; the old server keeps serving |
+| **N3** Copy the app to the new server (**in progress, started 04:50**) | On the new server only: namespace `rentek`, pull secret, ConfigMap, Redis, app 0.6.8, service, its own certificate, and an ingress for `app.rentek.oreedo.co` that receives no traffic until DNS changes. Tested with a client-side host override. | `ssh hostinger_kvm8 "microk8s kubectl delete namespace rentek"` plus deleting the certificate in `platform-tls`. The old server is not touched at any point. |
 | **N4** Test on the new server | Reach it with a host override, not public DNS | nothing to undo |
 | **N5** Change `app.rentek.oreedo.co` to the new IP | DNSimple A record (and AAAA if IPv6 is wanted) | set the A record back to 162.55.210.53 |
 | **N6** Clean up | Remove the CoreDNS entry once the app and database are on the same server | re-add the entry |
@@ -100,3 +100,41 @@ The only data written to the new database since the switch is what users have do
 
 - The init container now uses **`busybox:1.36`** instead of `busybox:latest`. A fixed version is not re-downloaded on every restart, so a registry problem can no longer stop the app from starting.
 - `docker-auth-config` was updated with the working login on 2026-09-12 04:45 (step 17). No pod uses it, but it no longer holds a dead token. Both secrets were verified against Docker Hub afterwards: **both valid**.
+
+---
+
+## Step N3 in detail — copy the app to the new server
+
+Started 2026-09-12 04:50. **The old server is not touched by any sub-step.** The new app receives no real users until the DNS record changes in step N5, which Ahmed does by hand.
+
+### Pre-checks (both passed before anything was built)
+
+| Check | Why it matters | Result |
+|---|---|---|
+| Can the new server pull `oreedo/rentek:0.6.8`? | today's outage happened because an image could not be pulled | **yes**, complete image, 10 of 10 layers, same digest as production |
+| Can a pod there reach `mssql.oreedo.co:31984`? | the database address is locked inside the image | **yes**, by name and by IP |
+
+### Sub-steps, each with its rollback
+
+| # | Action | Rollback |
+|---|---|---|
+| N3.1 | Create namespace `rentek` on the new server | `ssh hostinger_kvm8 "microk8s kubectl delete namespace rentek"` — removes everything from N3.1 to N3.7 at once |
+| N3.2 | Create pull secret `registry-1` from the refreshed Docker login | deleted with the namespace |
+| N3.3 | Create ConfigMap `assetlinks-config` (identical to the old server) | deleted with the namespace |
+| N3.4 | Deploy Redis (`gx-redis-app` + `gx-redis-svc`) | deleted with the namespace |
+| N3.5 | Deploy the app `rentek-app2` (0.6.8, same init container, same volumes) and `rentek-svc` | deleted with the namespace |
+| N3.6 | Request a certificate for `app.rentek.oreedo.co` from Let's Encrypt through DNSimple | `microk8s kubectl -n rentek delete certificate rentek-app-cert` and its secret. Creates only a temporary TXT record in DNS, which cert-manager removes itself |
+| N3.7 | Create the ingress for `app.rentek.oreedo.co` on the new server | `microk8s kubectl -n rentek delete ingress rentek-ingress`. **It cannot steal traffic**: the public DNS record still points to the old server |
+| N3.8 | Test the new app with a client-side host override (`curl --resolve`), not DNS | nothing to undo |
+
+### What is deliberately NOT done in N3
+
+- No DNS change. `app.rentek.oreedo.co` keeps pointing to the old server until Ahmed changes it in N5.
+- No change to the old server, so the live site is unaffected throughout.
+- The old app keeps running after N5 as the way back.
+
+### Step N5 when it comes (Ahmed changes DNS by hand)
+
+Change `app.rentek.oreedo.co` from `162.55.210.53` to `72.62.93.145` at DNSimple. Lower the TTL to 60 seconds a day earlier, so the change takes effect quickly and can be reversed quickly.
+
+**Rollback for N5:** set the record back to `162.55.210.53`. The old app still runs and still uses the same database, so it keeps working. Only sessions are lost, because each server has its own Redis.
