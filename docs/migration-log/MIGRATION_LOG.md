@@ -57,6 +57,7 @@ Times are UTC.
 | 14 | 04:22 | Pointed `rentek-svc` at the 0.6.6 app to restore service | old server | done in step 16 |
 | 15 | 04:33 | Replaced the `registry-1` pull secret with the new Docker login | old server, namespace `rentek` | `kubectl -n rentek get secret registry-1-backup-20260912 -o json \| jq '.metadata.name="registry-1"' \| kubectl apply -f -` |
 | 16 | 04:38 | Pointed `rentek-svc` back at 0.6.8; site verified HTTP 200 | old server | `kubectl -n rentek patch svc rentek-svc -p '{"spec":{"selector":{"app":"rentek-app"}}}'` |
+| 17 | 04:45 | Updated the unused `docker-auth-config` secret with the new Docker login (it still held the expired token) | old server, namespace `rentek` | `kubectl -n rentek get secret docker-auth-config-backup-20260912 -o json \| jq '.metadata.name="docker-auth-config"' \| kubectl apply -f -` |
 
 ### Full rollback: return everything to how it was this morning
 
@@ -98,4 +99,4 @@ The only data written to the new database since the switch is what users have do
 ### Two small improvements kept from the incident
 
 - The init container now uses **`busybox:1.36`** instead of `busybox:latest`. A fixed version is not re-downloaded on every restart, so a registry problem can no longer stop the app from starting.
-- `docker-auth-config` still holds the **old expired token**. It is not used by any pod. Delete it, or update it too, so nobody is misled later.
+- `docker-auth-config` was updated with the working login on 2026-09-12 04:45 (step 17). No pod uses it, but it no longer holds a dead token. Both secrets were verified against Docker Hub afterwards: **both valid**.
