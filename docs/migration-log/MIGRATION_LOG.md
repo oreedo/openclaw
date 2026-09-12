@@ -2,18 +2,20 @@
 
 > Every change made to a live system, in order, with the exact way to undo it. Newest day first. Keep this file updated **as changes happen**, not afterwards.
 
-## Where things stand right now (2026-09-12 04:40 UTC)
+## Where things stand right now (2026-09-12 05:45 UTC)
 
 | Item | State |
 |---|---|
-| Website `app.rentek.oreedo.co` | **UP**, HTTP 200, assetlinks HTTP 200 |
-| App version serving users | **0.6.8** (normal version, restored) |
-| Where the app runs | still the **old** server |
-| Database used by the app | **NEW server** 72.62.93.145 (confirmed from the database side) |
-| Old database | still running, no longer used, data still complete |
-| `mssql.oreedo.co` | points to 72.62.93.145 (public DNS) **and** is overridden inside the old cluster |
+| Website `app.rentek.oreedo.co` | **UP** on the new server, HTTP 200, valid certificate, assetlinks identical to before |
+| App version | 0.6.8 |
+| Where the app runs | **NEW server** 72.62.93.145 |
+| Database | **NEW server**, app connected to it |
+| Old server | app and database **stopped (0 replicas)**, all data kept (2.1 GB + 12 backups). Redis still running |
+| `mssql.oreedo.co` | 72.62.93.145 |
+| `app.rentek.oreedo.co` | answered by your wildcard `*.rentek`; **3 of 4 DNSimple nameservers answer, `ns1` still returns empty** |
+| Certificate on the new server | a **copy** of the old wildcard certificate (valid to 2026-10-23). Automatic renewal is **not** set up yet |
 
-**Step one of the migration (database first) is complete and working.**
+**Both migration steps are done: the database and the application now run on the new server.** Remaining work is listed under "Open items".
 
 ### Problem 1 (SOLVED 04:33): the Docker Hub token had expired
 
@@ -57,6 +59,12 @@ Times are UTC.
 | 14 | 04:22 | Pointed `rentek-svc` at the 0.6.6 app to restore service | old server | done in step 16 |
 | 15 | 04:33 | Replaced the `registry-1` pull secret with the new Docker login | old server, namespace `rentek` | `kubectl -n rentek get secret registry-1-backup-20260912 -o json \| jq '.metadata.name="registry-1"' \| kubectl apply -f -` |
 | 16 | 04:38 | Pointed `rentek-svc` back at 0.6.8; site verified HTTP 200 | old server | `kubectl -n rentek patch svc rentek-svc -p '{"spec":{"selector":{"app":"rentek-app"}}}'` |
+| 19 | 05:12 | Deployed the app on the **new** server: namespace `rentek`, pull secret, ConfigMap `assetlinks-config`, Redis, `rentek-app2` 0.6.8, `rentek-svc` (NodePort 32598) | new server | `ssh hostinger_kvm8 "microk8s kubectl delete namespace rentek"` |
+| 20 | 05:20 | Added the `oreedo.co` zone to the new server's `letsencrypt-dnsimple-prod` issuer (it only allowed `oreedo.app`, so no certificate could be issued for our name) | new server | patch the list back to `["oreedo.app"]` |
+| 21 | 05:25 | Copied the valid wildcard certificate from the old server into the new one as `tls-oreedo-co-copy`, and created the ingress for `app.rentek.oreedo.co` using it | new server | `microk8s kubectl -n rentek delete ingress rentek-ingress secret/tls-oreedo-co-copy` |
+| 22 | 05:35 | Deleted the stuck single-name Certificate `rentek-app-cert` | new server | recreate it, or better, create a wildcard certificate (see Open items) |
+| 23 | 05:40 | **Deleted one DNS record** in DNSimple: `_acme-challenge.app.rentek` TXT (id 83976593). cert-manager created it and never removed it; while it existed, `app.rentek.oreedo.co` had no address because a wildcard cannot answer for a name that already exists | DNSimple, zone `oreedo.co` | the record is disposable; cert-manager creates a fresh one whenever a certificate is requested |
+| 18 | 05:10 | **Stopped the old stack**: `rentek-app2`, `rentek-app` and `mssql-mssql-deployment` scaled to 0 on the old server. Checked first: no database connections, last write in July/August, fresh backup taken at 05:08 | old server | `kubectl -n rentek scale deploy/rentek-app2 --replicas=1`, `kubectl -n rentek scale deploy/rentek-app --replicas=1`, `kubectl -n default scale deploy/mssql-mssql-deployment --replicas=1`. All data stays on disk; the volumes are untouched and set to Retain |
 | 17 | 04:45 | Updated the unused `docker-auth-config` secret with the new Docker login (it still held the expired token) | old server, namespace `rentek` | `kubectl -n rentek get secret docker-auth-config-backup-20260912 -o json \| jq '.metadata.name="docker-auth-config"' \| kubectl apply -f -` |
 
 ### Full rollback: return everything to how it was this morning
@@ -138,3 +146,35 @@ Started 2026-09-12 04:50. **The old server is not touched by any sub-step.** The
 Change `app.rentek.oreedo.co` from `162.55.210.53` to `72.62.93.145` at DNSimple. Lower the TTL to 60 seconds a day earlier, so the change takes effect quickly and can be reversed quickly.
 
 **Rollback for N5:** set the record back to `162.55.210.53`. The old app still runs and still uses the same database, so it keeps working. Only sessions are lost, because each server has its own Redis.
+
+---
+
+## What we learned today (worth keeping)
+
+### A certificate check can take a wildcard name offline
+
+`app.rentek.oreedo.co` has no record of its own; it is answered by the wildcard `*.rentek.oreedo.co`. When cert-manager asked Let's Encrypt for a certificate for that exact name, it created `_acme-challenge.app.rentek.oreedo.co`. From that moment DNS considered `app.rentek.oreedo.co` to "exist with no address", and stopped using the wildcard (RFC 4592). The name went dark until the record was removed.
+
+**This would repeat at every renewal.** Two ways to prevent it, and we should do at least one:
+
+1. Ask for a **wildcard certificate** (`*.rentek.oreedo.co`), as the old server does. Its check record sits at `_acme-challenge.rentek.oreedo.co`, one level higher, which does not block the app name.
+2. Add a real A record for `app.rentek`, so the name never depends on the wildcard.
+
+### Never restart a pod before checking its image can be pulled
+
+Today's outage: the app had run for 137 days from a cached image. Restarting it forced a new download, the Docker token had expired, Docker Hub returned an HTML error page, and containerd stored that page as the image. Check the registry login first; keep image tags pinned (`busybox:1.36`, not `busybox:latest`).
+
+---
+
+## Open items
+
+| # | Item | Why it matters |
+|---|---|---|
+| 1 | Add `app.rentek` A record -> 72.62.93.145 in DNSimple | one DNSimple nameserver (`ns1`) still answers empty for the wildcard name, so some users cannot reach the site |
+| 2 | Set up the **wildcard certificate** on the new server | the copied certificate expires 2026-10-23 and does not renew itself |
+| 3 | Android app test | Ahmed is testing; assetlinks verified identical and served correctly |
+| 4 | Stop Redis on the old server | only remaining running piece there |
+| 5 | Rotate the secrets shown in chat: Docker token, Azure keys, GAM and MSSQL passwords | they appeared in a transcript |
+| 6 | Securely delete `/root/backups/vault/gx-kv-export-*.json` from the old server | plaintext copy of Vault secrets |
+| 7 | Optional: remove ~30 leftover `_acme-challenge` records in the `oreedo.co` zone | old renewal leftovers; harmless but untidy |
+| 8 | Decide when to decommission the old server | data is still there; it is the way back |
